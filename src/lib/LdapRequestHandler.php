@@ -9,19 +9,23 @@ require_once __DIR__ . '/../vendor/freedsx/ldap/src/FreeDSx/Ldap/Server/RequestC
 require_once __DIR__ . '/../vendor/freedsx/ldap/src/FreeDSx/Ldap/Operation/Request/SearchRequest.php';
 require_once __DIR__ . '/../vendor/freedsx/ldap/src/FreeDSx/Ldap/Entry/Entries.php';
 require_once __DIR__ . '/../vendor/freedsx/ldap/src/FreeDSx/Ldap/Entry/Entry.php';
+require_once __DIR__ . '/../vendor/freedsx/ldap/src/FreeDSx/Ldap/Exception/OperationException.php';
 require_once __DIR__ . '/../vendor/freedsx/ldap/src/FreeDSx/Ldap/Operation/Request/SearchRequest.php';
 require_once __DIR__ . '/../vendor/freedsx/ldap/src/FreeDSx/Ldap/Search/Filter/AndFilter.php';
 require_once __DIR__ . '/../vendor/freedsx/ldap/src/FreeDSx/Ldap/Search/Filter/EqualityFilter.php';
 require_once __DIR__ . '/user_ispconfig.php';
+require_once __DIR__ . '/util.php';
 require_once __DIR__ . '/../config/config.php';
 
 use FreeDSx\Ldap\Entry\Entry;
 use FreeDSx\Ldap\Entry\Entries;
+use FreeDSx\Ldap\Exception\OperationException;
 use FreeDSx\Ldap\Server\RequestHandler\GenericRequestHandler;
 use FreeDSx\Ldap\Server\RequestContext;
 use FreeDSx\Ldap\Operation\Request\SearchRequest;
 use FreeDSx\Ldap\Search\Filter\AndFilter;
 use FreeDSx\Ldap\Search\Filter\EqualityFilter;
+use ISPLDAP\lib\Util;
 
 class LdapRequestHandler extends GenericRequestHandler
 {
@@ -37,7 +41,13 @@ class LdapRequestHandler extends GenericRequestHandler
     public function bind(string $username, string $password): bool
     {
         global $config;
-        //echo "bind: <$username:$password>\n";
+        echo "bind: <$username:$password>\n";
+
+        #Verify if domain is in allowed list
+        if ((isset($config['accept_domain_only'])) && (count($config['accept_domain_only']) > 0)) {
+            if (!in_array(strtolower(Util::getDomainFromMail($username)),  array_map('strtolower', $config['accept_domain_only'])))
+                return false;
+        }
 
         $a = new \OC_User_ISPCONFIG(
             $config['soap_location'],
@@ -81,8 +91,14 @@ class LdapRequestHandler extends GenericRequestHandler
 
             #echo "Filter attr:" . $filter2->getAttribute() . "\n"; #campo
             //echo "Filter rule:" . $filter2->getValue() . "\n"; #valor
-            $login = $filter2->getValue();
+            $email = $filter2->getValue();
 
+            #Verify if domain is in allowed list
+            if ((isset($config['accept_domain_only']))&& (count($config['accept_domain_only'])>0)) {
+                if (!in_array(strtolower(Util::getDomainFromMail($email)) ,  array_map('strtolower',$config['accept_domain_only'])))
+                throw new OperationException("This user's domain is not allowed to be searched.");
+            }
+            
             $a = new \OC_User_ISPCONFIG(
                 $config['soap_location'],
                 $config['soap_url'],
@@ -91,18 +107,22 @@ class LdapRequestHandler extends GenericRequestHandler
                 ['map_uids' => false, 'validateCert' => $config['soap_validate_cert']]
             );
             #echo ("Variável <$login>\n");
-            $b = $a->userDataWithUIDFromIspc($login);
+            $b = $a->userDataWithUIDFromIspc($email);
             #var_dump($b);
-            $entries = new Entries(
-                Entry::create($login, [
-                    'cn' => $b['name'], #Full name?
-                    'sn' => '', #surname
-                    'givenName' => '', #name
-                    'mail' => $login,
-                ])
-            );
-            //var_dump($entries);
-            return $entries;
+            if ($b) {
+                $entries = new Entries(
+                    Entry::create($email, [
+                        'cn' => $b['name'], #Full name?
+                        'sn' => Util::splitName($b['name'])[1], #surname
+                        'uid' => Util::getUsernameFromMail($email),
+                        'sAMAccountName' => Util::getDNfromMail($email),
+                        'givenName' => Util::splitName($b['name'])[0], #name
+                        'mail' => $email,
+                    ])
+                );
+                //var_dump($entries);
+                return $entries;
+            }
         } else {
             //echo "nao é instancia " . get_class($filter) . "\n";
         }
@@ -124,5 +144,3 @@ class LdapRequestHandler extends GenericRequestHandler
         return $entries;
     }
 }
-
-?>

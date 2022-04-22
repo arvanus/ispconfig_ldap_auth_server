@@ -10,11 +10,13 @@ ENV soap_validate_cert=false
 
 
 RUN apt-get update -yq &&\
-apt-get install libxml2-dev git -yq &&\
+apt-get install libxml2-dev libldap2-dev git -yq &&\
 docker-php-ext-configure pcntl --enable-pcntl  &&\
 docker-php-ext-install pcntl &&\
 docker-php-ext-configure soap --enable-soap  &&\
-docker-php-ext-install soap
+docker-php-ext-install soap &&\
+docker-php-ext-configure ldap --with-libdir=lib/x86_64-linux-gnu/ &&\
+docker-php-ext-install ldap
 
 
 RUN php -r "copy('https://getcomposer.org/installer', 'composer-setup.php');" &&\
