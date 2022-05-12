@@ -7,6 +7,7 @@ ENV remote_soap_pass='ispremotepass'
 ENV soap_url='https://localhost:8080/remote/'
 ENV soap_location='https://localhost:8080/remote/index.php'
 ENV soap_validate_cert=false
+ENV accept_domain_only='[]'
 
 
 RUN apt-get update -yq &&\

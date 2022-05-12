@@ -10,6 +10,7 @@ if [ ! -f /app/config/config.php ] ; then
 \$config['soap_url'] = '$soap_url';
 \$config['soap_location'] = '$soap_location';
 \$config['soap_validate_cert'] = $soap_validate_cert;
+\$config['accept_domain_only'] = $accept_domain_only;
 
 #TODO:
 #\$config['accept_domain_only'] = []; #empty = any domain existing into the ISPConfig server
