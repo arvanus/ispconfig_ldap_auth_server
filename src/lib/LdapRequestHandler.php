@@ -94,11 +94,11 @@ class LdapRequestHandler extends GenericRequestHandler
             $email = $filter2->getValue();
 
             #Verify if domain is in allowed list
-            if ((isset($config['accept_domain_only']))&& (count($config['accept_domain_only'])>0)) {
-                if (!in_array(strtolower(Util::getDomainFromMail($email)) ,  array_map('strtolower',$config['accept_domain_only'])))
-                throw new OperationException("This user's domain is not allowed to be searched.");
+            if ((isset($config['accept_domain_only'])) && (count($config['accept_domain_only']) > 0)) {
+                if (!in_array(strtolower(Util::getDomainFromMail($email)),  array_map('strtolower', $config['accept_domain_only'])))
+                    throw new OperationException("This user's domain is not allowed to be searched.");
             }
-            
+
             $a = new \OC_User_ISPCONFIG(
                 $config['soap_location'],
                 $config['soap_url'],
@@ -109,6 +109,9 @@ class LdapRequestHandler extends GenericRequestHandler
             #echo ("Variável <$login>\n");
             $b = $a->userDataWithUIDFromIspc($email);
             #var_dump($b);
+            //Disable the user if can't use BOTH imap and pop3
+            if (($b['disableimap'] == "y") && ($b['disablepop3'] == "y"))
+                $b = false;
             if ($b) {
                 $entries = new Entries(
                     Entry::create($email, [
