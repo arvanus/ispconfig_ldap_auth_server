@@ -2,7 +2,7 @@
 
 A service that uses ISPConfig remote API to serve as a LDAP auth server, uses ISPConfig mailbox user and password data, the mail user must have IMAP or POP3 enabled, if none the user won't be availabe to LDAP clients
 
-
+Note: I hadn't configured anonymous LDAP lookup, so you'll need to create a bind user as a regular mail user, like `myldapcontroluser@mydomain.com`.
 
 Example of a `docker-compose.yml`
 
