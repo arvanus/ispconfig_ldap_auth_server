@@ -41,7 +41,7 @@ class LdapRequestHandler extends GenericRequestHandler
     public function bind(string $username, string $password): bool
     {
         global $config;
-        echo "bind: <$username:$password>\n";
+        echo "bind: <$username>\n";
 
         #Verify if domain is in allowed list
         if ((isset($config['accept_domain_only'])) && (count($config['accept_domain_only']) > 0)) {
