@@ -1,5 +1,5 @@
 {
     "require": {
-        "freedsx/ldap": "^0.7.0"
+        "freedsx/ldap": "^0.8.0"
     }
 }
