@@ -1,5 +1,8 @@
 {
     "require": {
-        "freedsx/ldap": "^0.8.0"
+        "freedsx/ldap": "^0.8.0",
+        "ext-soap": "*",
+        "ext-ldap": "*",
+        "ext-pcntl": "*"
     }
 }

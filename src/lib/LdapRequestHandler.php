@@ -1,21 +1,7 @@
 <?php
 
-//namespace LdapRequestHandler;
-
-require_once __DIR__ . '/../vendor/autoload.php';
-require_once __DIR__ . '/../vendor/freedsx/ldap/src/FreeDSx/Ldap/LdapServer.php';
-require_once __DIR__ . '/../vendor/freedsx/ldap/src/FreeDSx/Ldap/Server/RequestHandler/GenericRequestHandler.php';
-require_once __DIR__ . '/../vendor/freedsx/ldap/src/FreeDSx/Ldap/Server/RequestContext.php';
-require_once __DIR__ . '/../vendor/freedsx/ldap/src/FreeDSx/Ldap/Operation/Request/SearchRequest.php';
-require_once __DIR__ . '/../vendor/freedsx/ldap/src/FreeDSx/Ldap/Entry/Entries.php';
-require_once __DIR__ . '/../vendor/freedsx/ldap/src/FreeDSx/Ldap/Entry/Entry.php';
-require_once __DIR__ . '/../vendor/freedsx/ldap/src/FreeDSx/Ldap/Exception/OperationException.php';
-require_once __DIR__ . '/../vendor/freedsx/ldap/src/FreeDSx/Ldap/Operation/Request/SearchRequest.php';
-require_once __DIR__ . '/../vendor/freedsx/ldap/src/FreeDSx/Ldap/Search/Filter/AndFilter.php';
-require_once __DIR__ . '/../vendor/freedsx/ldap/src/FreeDSx/Ldap/Search/Filter/EqualityFilter.php';
 require_once __DIR__ . '/user_ispconfig.php';
 require_once __DIR__ . '/util.php';
-require_once __DIR__ . '/../config/config.php';
 
 use FreeDSx\Ldap\Entry\Entry;
 use FreeDSx\Ldap\Entry\Entries;
@@ -41,24 +27,78 @@ class LdapRequestHandler extends GenericRequestHandler
     public function bind(string $username, string $password): bool
     {
         global $config;
-        echo "bind: <$username>\n";
+        $debug = $config['debug_mode'] ?? false;
+
+        if ($debug) {
+            echo "\n=== LDAP BIND ATTEMPT ===\n";
+            echo "Username received: " . $username . "\n";
+        }
+
+        // Check if username is in DN format (CN=...,DC=...) and convert to email
+        if (strpos($username, 'CN=') !== false || strpos($username, 'cn=') !== false) {
+            if ($debug) echo "Detected DN format, converting to email...\n";
+            $username = Util::getMailFromDN($username);
+            if ($debug) echo "Converted to: " . $username . "\n";
+        }
+
+        if ($debug) {
+            echo "Password length: " . strlen($password) . "\n";
+            echo "Domain extracted: " . Util::getDomainFromMail($username) . "\n";
+            echo "Allowed domains: " . json_encode($config['accept_domain_only'] ?? []) . "\n";
+        }
 
         #Verify if domain is in allowed list
         if ((isset($config['accept_domain_only'])) && (count($config['accept_domain_only']) > 0)) {
-            if (!in_array(strtolower(Util::getDomainFromMail($username)),  array_map('strtolower', $config['accept_domain_only'])))
+            $userDomain = strtolower(Util::getDomainFromMail($username));
+            $allowedDomains = array_map('strtolower', $config['accept_domain_only']);
+
+            if ($debug) {
+                echo "Checking domain: '$userDomain' against: " . json_encode($allowedDomains) . "\n";
+            }
+
+            if (!in_array($userDomain, $allowedDomains)) {
+                if ($debug) echo "Domain NOT in allowed list - REJECTED\n";
                 return false;
+            }
+            if ($debug) echo "Domain IS in allowed list - OK\n";
+        } else {
+            if ($debug) echo "No domain restrictions configured\n";
         }
 
-        $a = new \OC_User_ISPCONFIG(
-            $config['soap_location'],
-            $config['soap_url'],
-            $config['remote_soap_user'],
-            $config['remote_soap_pass'],
-            ['map_uids' => false, 'validateCert' => $config['soap_validate_cert']]
-        );
-        $b = $a->checkPassword($username, $password);
-        //echo $b."\n";
-        return !!$b;
+        if ($debug) {
+            echo "SOAP URL: " . $config['soap_url'] . "\n";
+            echo "SOAP Location: " . $config['soap_location'] . "\n";
+            echo "SOAP Validate Cert: " . ($config['soap_validate_cert'] ? 'true' : 'false') . "\n";
+        }
+
+        try {
+            if ($debug) echo "Creating ISPConfig SOAP connection...\n";
+
+            $a = new \OC_User_ISPCONFIG(
+                $config['soap_location'],
+                $config['soap_url'],
+                $config['remote_soap_user'],
+                $config['remote_soap_pass'],
+                ['map_uids' => false, 'validateCert' => $config['soap_validate_cert']]
+            );
+
+            if ($debug) echo "Checking password via ISPConfig SOAP...\n";
+            $b = $a->checkPassword($username, $password);
+
+            if ($b) {
+                if ($debug) echo "Authentication SUCCESS for user: " . $username . "\n";
+                return true;
+            } else {
+                if ($debug) echo "Authentication FAILED for user: " . $username . "\n";
+                return false;
+            }
+        } catch (\Exception $e) {
+            if ($debug) {
+                echo "Exception during bind: " . $e->getMessage() . "\n";
+                echo "Stack trace:\n" . $e->getTraceAsString() . "\n";
+            }
+            return false;
+        }
     }
 
     /**
@@ -113,13 +153,21 @@ class LdapRequestHandler extends GenericRequestHandler
             if (($b['disableimap'] == "y") && ($b['disablepop3'] == "y"))
                 $b = false;
             if ($b) {
+                // Split name safely
+                $nameParts = Util::splitName($b['name']);
+                $givenName = $nameParts[0] ?? $b['name'];
+                $surname = $nameParts[1] ?? '';
+
+                // Use proper DN for LDAP entry (not email)
+                $dn = Util::getDNfromMail($email);
+
                 $entries = new Entries(
-                    Entry::create($email, [
-                        'cn' => $b['name'], #Full name?
-                        'sn' => Util::splitName($b['name'])[1], #surname
+                    Entry::create($dn, [
+                        'cn' => $b['name'], #Full name
+                        'sn' => $surname, #surname
                         'uid' => Util::getUsernameFromMail($email),
-                        'sAMAccountName' => Util::getDNfromMail($email),
-                        'givenName' => Util::splitName($b['name'])[0], #name
+                        'sAMAccountName' => Util::getUsernameFromMail($email), #SAM name should be username, not DN
+                        'givenName' => $givenName, #first name
                         'mail' => $email,
                     ])
                 );

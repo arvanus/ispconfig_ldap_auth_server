@@ -26,27 +26,30 @@ class Util
 
 	public static function getUsernameFromMail($mail): string
 	{
-		return explode('@', $mail)[0];
+		$parts = explode('@', $mail);
+		return $parts[0] ?? '';
 	}
 
 	public static function getDomainFromMail($mail): string
 	{
-		return explode('@', $mail)[1];
+		$parts = explode('@', $mail);
+		return $parts[1] ?? '';
 	}
 	public static function getDNfromMail($mail): string
 	{
 		$arr_dn = [];
 		$arr_mail = explode('@', $mail);
-		$arr_dn[] = 'CN=' . $arr_mail[0];
-		foreach (explode('.', $arr_mail[1]) as $value) {
-			$arr_dn[] = 'DC=' . $value;
+		$arr_dn[] = 'CN=' . ($arr_mail[0] ?? '');
+		if (isset($arr_mail[1])) {
+			foreach (explode('.', $arr_mail[1]) as $value) {
+				$arr_dn[] = 'DC=' . $value;
+			}
 		}
 		return implode(',', $arr_dn);
 	}
 	public static function getMailFromDN($dn): string
 	{
 		$tmp = Util::parseLdapDn($dn);
-		var_dump($tmp);
 		$mail = implode('.',$tmp['CN']) . '@' . implode('.', $tmp['DC']);
 		return $mail;
 	}
