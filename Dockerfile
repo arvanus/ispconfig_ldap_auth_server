@@ -2,12 +2,13 @@ FROM php:8-cli
 ENV PORT=389
 
 ENV ldap_port=${PORT}
-ENV remote_soap_user='ispremoteuser'
-ENV remote_soap_pass='ispremotepass'
-ENV soap_url='https://localhost:8080/remote/'
-ENV soap_location='https://localhost:8080/remote/index.php'
-ENV soap_validate_cert=false
-ENV accept_domain_only='[]'
+ENV remote_soap_user=ispremoteuser
+ENV remote_soap_pass=ispremotepass
+ENV soap_url=https://localhost:8080/remote/
+ENV soap_location=https://localhost:8080/remote/index.php
+ENV soap_validate_cert=true
+ENV accept_domain_only=[]
+ENV debug_mode=false
 
 
 RUN apt-get update -yq &&\
@@ -27,11 +28,11 @@ php -r "unlink('composer-setup.php');" &&\
 mv composer.phar /usr/local/bin/composer
 
 COPY ./src /app
-COPY ./start.sh /start.sh 
-RUN chmod u+x /start.sh
+COPY ./start.sh /app/start.sh 
+RUN chmod u+x /app/start.sh
 
 WORKDIR /app
 RUN composer install --prefer-source --no-interaction
 
 EXPOSE ${ldap_port}
-ENTRYPOINT [ "/start.sh" ]
+ENTRYPOINT [ "php", "/app/server.php" ]
