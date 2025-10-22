@@ -1,4 +1,7 @@
 <?php
+// Suppress PHP 8.1+ deprecation warnings from FreeDSx/LDAP library
+error_reporting(E_ALL & ~E_DEPRECATED);
+
 require_once __DIR__ . '/vendor/autoload.php';
 require_once __DIR__ . '/lib/LdapRequestHandler.php';
 
