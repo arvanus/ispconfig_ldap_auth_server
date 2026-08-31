@@ -56,10 +56,12 @@ function ldap_format_context(array $context): string
     return $json === false ? '[context could not be serialised]' : $json;
 }
 
+$serverPid = getmypid();
+
 // Report why this process is going away. Covers fatal errors, uncaught
 // exceptions and a plain fall-through of the accept loop, which otherwise all
 // look identical from the outside: an empty log and a container restart.
-register_shutdown_function(static function (): void {
+register_shutdown_function(static function () use ($serverPid): void {
     $error = error_get_last();
 
     if ($error !== null && in_array($error['type'], [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR], true)) {
@@ -68,7 +70,13 @@ register_shutdown_function(static function (): void {
         return;
     }
 
-    ldap_log('info', 'Process exiting.');
+    // Every connection forks a child that exits moments later, so logging each
+    // clean exit produces one line per connection and buries the one event this
+    // hook exists for: the server process itself going away. Fatal errors above
+    // are still reported from any process.
+    if (getmypid() === $serverPid) {
+        ldap_log('info', 'Process exiting.');
+    }
 });
 
 set_exception_handler(static function (\Throwable $e): void {
