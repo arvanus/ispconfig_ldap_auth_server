@@ -2,6 +2,7 @@
 
 require_once __DIR__ . '/user_ispconfig.php';
 require_once __DIR__ . '/util.php';
+require_once __DIR__ . '/AuthCache.php';
 
 use FreeDSx\Ldap\Entry\Entry;
 use FreeDSx\Ldap\Entry\Entries;
@@ -11,6 +12,7 @@ use FreeDSx\Ldap\Server\RequestContext;
 use FreeDSx\Ldap\Operation\Request\SearchRequest;
 use FreeDSx\Ldap\Search\Filter\AndFilter;
 use FreeDSx\Ldap\Search\Filter\EqualityFilter;
+use ISPLDAP\lib\AuthCache;
 use ISPLDAP\lib\Util;
 
 class LdapRequestHandler extends GenericRequestHandler
@@ -65,7 +67,24 @@ class LdapRequestHandler extends GenericRequestHandler
             if ($debug) echo "No domain restrictions configured\n";
         }
 
+        // Repeated binds are the norm, not the exception: a single git operation
+        // against GitLab issues several, most of them for the same service bind
+        // DN. Without this cache each one opens a fresh SOAP connection to
+        // ISPConfig (connect + login + logout) in its own forked process.
+        $cache = AuthCache::instance($config);
+        $cachedResult = $cache->getBind($username, $password);
+
+        if ($cachedResult !== null) {
+            if ($debug) {
+                echo "Cache HIT for user: " . $username
+                    . " -> " . ($cachedResult ? 'SUCCESS' : 'FAILED') . "\n";
+            }
+
+            return $cachedResult;
+        }
+
         if ($debug) {
+            echo "Cache MISS - querying ISPConfig\n";
             echo "SOAP URL: " . $config['soap_url'] . "\n";
             echo "SOAP Location: " . $config['soap_location'] . "\n";
             echo "SOAP Validate Cert: " . ($config['soap_validate_cert'] ? 'true' : 'false') . "\n";
@@ -87,12 +106,25 @@ class LdapRequestHandler extends GenericRequestHandler
 
             if ($b) {
                 if ($debug) echo "Authentication SUCCESS for user: " . $username . "\n";
+                $cache->setBind($username, $password, true);
                 return true;
             } else {
                 if ($debug) echo "Authentication FAILED for user: " . $username . "\n";
+                $cache->setBind($username, $password, false);
                 return false;
             }
         } catch (\Exception $e) {
+            // An unreachable or failing ISPConfig is not a wrong password, so
+            // the outcome is deliberately not cached: otherwise a brief outage
+            // would keep rejecting valid users for the whole negative TTL.
+            if (function_exists('ldap_log')) {
+                ldap_log('error', 'Bind aborted by an exception: ' . $e->getMessage(), [
+                    'user' => $username,
+                    'file' => $e->getFile(),
+                    'line' => $e->getLine(),
+                ]);
+            }
+
             if ($debug) {
                 echo "Exception during bind: " . $e->getMessage() . "\n";
                 echo "Stack trace:\n" . $e->getTraceAsString() . "\n";
@@ -139,19 +171,47 @@ class LdapRequestHandler extends GenericRequestHandler
                     throw new OperationException("This user's domain is not allowed to be searched.");
             }
 
-            $a = new \OC_User_ISPCONFIG(
-                $config['soap_location'],
-                $config['soap_url'],
-                $config['remote_soap_user'],
-                $config['remote_soap_pass'],
-                ['map_uids' => false, 'validateCert' => $config['soap_validate_cert']]
-            );
-            #echo ("Variável <$login>\n");
-            $b = $a->userDataWithUIDFromIspc($email);
-            #var_dump($b);
+            $debug = $config['debug_mode'] ?? false;
+
+            // GitLab interleaves a search between the two binds of a single git
+            // operation, and it was the dominant cost once the binds were
+            // cached: 1.8s of silence between two 3ms cache hits. Same cache,
+            // same reasoning as bind().
+            $cache = AuthCache::instance($config);
+            $b = $cache->getUserInfo($email);
+
+            if ($b !== null) {
+                if ($debug) {
+                    echo "SEARCH cache HIT for: " . $email
+                        . " -> " . ($b === false ? 'NOT FOUND' : 'FOUND') . "\n";
+                }
+            } else {
+                if ($debug) echo "SEARCH cache MISS - querying ISPConfig for: " . $email . "\n";
+
+                $a = new \OC_User_ISPCONFIG(
+                    $config['soap_location'],
+                    $config['soap_url'],
+                    $config['remote_soap_user'],
+                    $config['remote_soap_pass'],
+                    ['map_uids' => false, 'validateCert' => $config['soap_validate_cert']]
+                );
+                $b = $a->userDataWithUIDFromIspc($email);
+
+                // Only the fields used below are cached: the ISPConfig record
+                // also carries the account's password hash, which must never
+                // be written out.
+                $cache->setUserInfo($email, is_array($b) ? $b : false);
+            }
+
             //Disable the user if can't use BOTH imap and pop3
-            if (($b['disableimap'] == "y") && ($b['disablepop3'] == "y"))
+            // is_array() guards the not-found case: $b is false there, and
+            // indexing it raised two warnings per lookup.
+            if (is_array($b)
+                && (($b['disableimap'] ?? 'n') == "y")
+                && (($b['disablepop3'] ?? 'n') == "y")) {
                 $b = false;
+            }
+
             if ($b) {
                 // Split name safely
                 $nameParts = Util::splitName($b['name']);
