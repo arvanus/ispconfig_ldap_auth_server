@@ -198,6 +198,51 @@ class AuthCache
     }
 
     /**
+     * Cached directory data for a mail user, or null when there is no usable
+     * entry. A cached `false` means "ISPConfig has no such user".
+     *
+     * @return array<string,string>|false|null
+     */
+    public function getUserInfo(string $email)
+    {
+        $value = $this->read('userinfo', strtolower($email));
+
+        if ($value === null) {
+            return null;
+        }
+
+        return is_array($value) ? $value : false;
+    }
+
+    /**
+     * Remember the directory data for a mail user.
+     *
+     * Only the three fields the search response is built from are stored. The
+     * ISPConfig mailuser record also carries the account's password hash, and
+     * that must never reach the cache - hence the deliberate narrowing here
+     * rather than storing the record as it came.
+     *
+     * @param array<string,string>|false $info
+     */
+    public function setUserInfo(string $email, $info): void
+    {
+        $value = is_array($info)
+            ? [
+                'name'        => (string) ($info['name'] ?? ''),
+                'disableimap' => (string) ($info['disableimap'] ?? 'n'),
+                'disablepop3' => (string) ($info['disablepop3'] ?? 'n'),
+            ]
+            : false;
+
+        $this->write(
+            'userinfo',
+            strtolower($email),
+            $value,
+            $value === false ? $this->negativeTtl : $this->ttl
+        );
+    }
+
+    /**
      * Remove every cached entry. Used on bootstrap.
      */
     public function flush(): void

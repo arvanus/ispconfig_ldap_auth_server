@@ -171,19 +171,47 @@ class LdapRequestHandler extends GenericRequestHandler
                     throw new OperationException("This user's domain is not allowed to be searched.");
             }
 
-            $a = new \OC_User_ISPCONFIG(
-                $config['soap_location'],
-                $config['soap_url'],
-                $config['remote_soap_user'],
-                $config['remote_soap_pass'],
-                ['map_uids' => false, 'validateCert' => $config['soap_validate_cert']]
-            );
-            #echo ("Variável <$login>\n");
-            $b = $a->userDataWithUIDFromIspc($email);
-            #var_dump($b);
+            $debug = $config['debug_mode'] ?? false;
+
+            // GitLab interleaves a search between the two binds of a single git
+            // operation, and it was the dominant cost once the binds were
+            // cached: 1.8s of silence between two 3ms cache hits. Same cache,
+            // same reasoning as bind().
+            $cache = AuthCache::instance($config);
+            $b = $cache->getUserInfo($email);
+
+            if ($b !== null) {
+                if ($debug) {
+                    echo "SEARCH cache HIT for: " . $email
+                        . " -> " . ($b === false ? 'NOT FOUND' : 'FOUND') . "\n";
+                }
+            } else {
+                if ($debug) echo "SEARCH cache MISS - querying ISPConfig for: " . $email . "\n";
+
+                $a = new \OC_User_ISPCONFIG(
+                    $config['soap_location'],
+                    $config['soap_url'],
+                    $config['remote_soap_user'],
+                    $config['remote_soap_pass'],
+                    ['map_uids' => false, 'validateCert' => $config['soap_validate_cert']]
+                );
+                $b = $a->userDataWithUIDFromIspc($email);
+
+                // Only the fields used below are cached: the ISPConfig record
+                // also carries the account's password hash, which must never
+                // be written out.
+                $cache->setUserInfo($email, is_array($b) ? $b : false);
+            }
+
             //Disable the user if can't use BOTH imap and pop3
-            if (($b['disableimap'] == "y") && ($b['disablepop3'] == "y"))
+            // is_array() guards the not-found case: $b is false there, and
+            // indexing it raised two warnings per lookup.
+            if (is_array($b)
+                && (($b['disableimap'] ?? 'n') == "y")
+                && (($b['disablepop3'] ?? 'n') == "y")) {
                 $b = false;
+            }
+
             if ($b) {
                 // Split name safely
                 $nameParts = Util::splitName($b['name']);

@@ -35,6 +35,10 @@ seconds**, six of them for the very same service bind DN. Every bind otherwise
 opens a fresh SOAP connection to ISPConfig (connect, login, work, logout) inside
 its own forked process.
 
+The same operation also issues LDAP *searches* between those binds, each one
+another SOAP round trip. Measured after the binds were cached, a single search
+accounted for 1.8 seconds of a 2.85 second fetch - so both are cached.
+
 A short-lived cache absorbs the repeats. It is enabled by default:
 
 | Variable | Default | Meaning |
