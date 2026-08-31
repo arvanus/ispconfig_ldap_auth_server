@@ -21,8 +21,39 @@ function ldap_log(string $level, string $message, array $context = []): void
         getmypid(),
         strtoupper($level),
         $message,
-        $context ? ' ' . json_encode($context) : ''
+        $context ? ' ' . ldap_format_context($context) : ''
     ));
+}
+
+/**
+ * Render a log context as JSON.
+ *
+ * Two traps worth guarding against. FreeDSx hands the caught Throwable inside
+ * the context, and json_encode() renders a Throwable as `{}` - losing exactly
+ * the detail these logs exist to capture. And any non-UTF8 byte arriving from a
+ * socket makes json_encode() return false, which would silently drop the whole
+ * context.
+ */
+function ldap_format_context(array $context): string
+{
+    foreach ($context as $key => $value) {
+        if ($value instanceof \Throwable) {
+            $context[$key] = [
+                'class'   => get_class($value),
+                'message' => $value->getMessage(),
+                'file'    => $value->getFile(),
+                'line'    => $value->getLine(),
+            ];
+        } elseif (is_object($value) && !($value instanceof \JsonSerializable)) {
+            $context[$key] = method_exists($value, '__toString')
+                ? (string) $value
+                : get_class($value);
+        }
+    }
+
+    $json = json_encode($context, JSON_INVALID_UTF8_SUBSTITUTE | JSON_PARTIAL_OUTPUT_ON_ERROR);
+
+    return $json === false ? '[context could not be serialised]' : $json;
 }
 
 // Report why this process is going away. Covers fatal errors, uncaught
@@ -67,7 +98,19 @@ if (function_exists('pcntl_async_signals')) {
 $logger = new class extends \Psr\Log\AbstractLogger {
     public function log($level, $message, array $context = []): void
     {
-        ldap_log((string) $level, (string) $message, $context);
+        $level = (string) $level;
+
+        // FreeDSx emits several INFO lines per connection. At the bind volume
+        // this server sees that is dozens of lines per client operation, so
+        // they stay behind debug_mode. Warning and above always get through -
+        // including the fork failures this logger exists to surface.
+        $verbose = (bool) ($GLOBALS['config']['debug_mode'] ?? false);
+
+        if (!$verbose && in_array($level, ['debug', 'info', 'notice'], true)) {
+            return;
+        }
+
+        ldap_log($level, (string) $message, $context);
     }
 };
 
@@ -160,18 +203,30 @@ ldap_log('info', 'ISPConfig LDAP auth server starting.', [
 /**
  * Supervisor loop.
  *
- * FreeDSx tears the whole server down when it cannot fork a child, and any
- * exception escaping the accept loop ends the process. Previously that meant
- * the container exited and every client got a connection reset until Docker
- * brought it back. Rebuilding the listener in-process turns a minutes-long
- * outage into a one second gap.
+ * FreeDSx tears the whole server down when it cannot fork a child: the failure
+ * is reported through logAndThrow(), and the exception unwinds out of the accept
+ * loop and ends the process. The container then exits and every client gets a
+ * connection reset until Docker brings it back. Rebuilding the listener here
+ * turns a minutes-long outage into a one second gap.
+ *
+ * Only *exceptional* exits are restarted. A run() that returns normally is an
+ * orderly shutdown and must be honoured - see the comment below.
  */
-$parentPid    = getmypid();
-$restarts     = 0;
-$maxRestarts  = 100;
-$firstRestart = null;
+$parentPid = getmypid();
+
+/** Consecutive immediate failures tolerated before handing over to Docker. */
+$maxConsecutiveRestarts = 10;
+
+/** Hard ceiling for the life of the process, so no failure pattern loops forever. */
+$maxTotalRestarts = 50;
+
+$restarts      = 0;
+$totalRestarts = 0;
+$backoff       = 1;
 
 while (true) {
+    $startedAt = time();
+
     try {
         $server = new LdapServer([
             'port' => $config['ldap_port'],
@@ -190,7 +245,19 @@ while (true) {
             exit(0);
         }
 
-        ldap_log('warning', 'Accept loop ended on its own; restarting listener.');
+        // run() returning WITHOUT an exception means an orderly shutdown: a
+        // SIGTERM from `docker stop`, whose FreeDSx handler stops the children,
+        // closes the socket and lets the accept loop break.
+        //
+        // Restarting here would be a bug: every stop would become a restart,
+        // and the following SIGTERM would be a no-op, because the handler still
+        // installed belongs to the previous runner and its isShuttingDown flag
+        // is already true. The container would never honour TERM and would
+        // always be SIGKILLed after the grace period, cutting live connections.
+        // So exit, exactly as this server did before the supervisor existed.
+        ldap_log('info', 'Accept loop finished; shutting down.');
+
+        exit(0);
     } catch (\Throwable $e) {
         if (getmypid() !== $parentPid) {
             ldap_log('error', 'Child process failed: ' . $e->getMessage(), [
@@ -208,26 +275,33 @@ while (true) {
         ]);
     }
 
-    $now          = time();
-    $firstRestart = $firstRestart ?? $now;
-    $restarts++;
+    // A listener that served for a while before failing is an isolated fault,
+    // not a crash loop, so the consecutive counter and the backoff reset. The
+    // absolute ceiling below still applies, so no pattern of failures - however
+    // slow - can keep this process spinning indefinitely.
+    if ((time() - $startedAt) >= 60) {
+        $restarts = 0;
+        $backoff  = 1;
+    }
 
-    // Give up only when restarts are both numerous and sustained, so the
-    // container manager can step in on a genuinely broken state (a port that
-    // stays bound, for instance) instead of us spinning forever.
-    if ($restarts >= $maxRestarts && ($now - $firstRestart) < 300) {
-        ldap_log('critical', 'Too many restarts in a short window; exiting so the supervisor can take over.', [
-            'restarts' => $restarts,
-            'seconds'  => $now - $firstRestart,
+    $restarts++;
+    $totalRestarts++;
+
+    if ($restarts > $maxConsecutiveRestarts || $totalRestarts > $maxTotalRestarts) {
+        ldap_log('critical', 'Giving up on restarting; exiting so the container manager can take over.', [
+            'consecutive' => $restarts,
+            'total'       => $totalRestarts,
         ]);
 
         exit(1);
     }
 
-    if (($now - $firstRestart) >= 300) {
-        $restarts     = 1;
-        $firstRestart = $now;
-    }
+    ldap_log('warning', 'Restarting listener.', [
+        'attempt'         => $restarts,
+        'backoff_seconds' => $backoff,
+    ]);
 
-    sleep(1);
+    sleep($backoff);
+
+    $backoff = min($backoff * 2, 30);
 }

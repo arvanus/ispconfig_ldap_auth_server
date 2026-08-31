@@ -9,6 +9,10 @@ ENV soap_location=https://localhost:8080/remote/index.php
 ENV soap_validate_cert=true
 ENV accept_domain_only=[]
 ENV debug_mode=false
+ENV auth_cache_enabled=true
+ENV auth_cache_ttl=60
+ENV auth_cache_negative_ttl=5
+ENV auth_cache_dir=/dev/shm/ispldap-authcache
 
 
 RUN apt-get update -yq &&\

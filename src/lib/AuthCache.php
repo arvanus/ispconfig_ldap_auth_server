@@ -122,9 +122,17 @@ class AuthCache
 
         @chmod($this->dir, 0700);
 
-        // Entries from a previous run are unreadable anyway (new secret), so
-        // drop them instead of leaving them around until they expire.
+        if (!$this->directoryIsTrustworthy()) {
+            $this->enabled = false;
+
+            return false;
+        }
+
+        // Everything from a previous run goes, the secret included. A fresh
+        // secret per start is a property this class documents, and silently
+        // re-using one found on disk would break it.
         $this->flush();
+        @unlink($this->dir . '/' . self::SECRET_FILE);
 
         if ($this->loadOrCreateSecret() === null) {
             $this->enabled = false;
@@ -133,6 +141,33 @@ class AuthCache
         }
 
         return true;
+    }
+
+    /**
+     * Refuse a cache directory this process does not own, or that others can
+     * write to.
+     *
+     * In the intended Docker deployment the directory is created right above
+     * and this always passes. It matters when the server runs outside a
+     * container against a shared /dev/shm: whoever owns the directory can read
+     * the secret, forge a key and plant a positive entry - turning the cache
+     * into an authentication bypass.
+     */
+    private function directoryIsTrustworthy(): bool
+    {
+        clearstatcache(true, $this->dir);
+
+        if (function_exists('posix_geteuid')) {
+            $owner = @fileowner($this->dir);
+
+            if ($owner !== false && $owner !== posix_geteuid()) {
+                return false;
+            }
+        }
+
+        $perms = @fileperms($this->dir);
+
+        return $perms === false ? false : ($perms & 0077) === 0;
     }
 
     /**
@@ -167,7 +202,7 @@ class AuthCache
      */
     public function flush(): void
     {
-        foreach ($this->entryFiles() as $file) {
+        foreach (array_merge($this->entryFiles(), $this->tempFiles()) as $file) {
             @unlink($file);
         }
     }
@@ -326,6 +361,18 @@ class AuthCache
                 @unlink($file);
             }
         }
+
+        // A child killed between the write and the rename leaves a .tmp behind,
+        // and SIGKILL on children is routine here: FreeDSx sends it 15 seconds
+        // into shutdown. Left alone these accumulate in a tmpfs that defaults
+        // to 64MB in Docker.
+        foreach ($this->tempFiles() as $file) {
+            $mtime = @filemtime($file);
+
+            if ($mtime === false || ($now - $mtime) > 60) {
+                @unlink($file);
+            }
+        }
     }
 
     /**
@@ -334,6 +381,16 @@ class AuthCache
     private function entryFiles(): array
     {
         $files = glob($this->dir . '/*.json');
+
+        return $files === false ? [] : $files;
+    }
+
+    /**
+     * @return string[]
+     */
+    private function tempFiles(): array
+    {
+        $files = glob($this->dir . '/*.tmp');
 
         return $files === false ? [] : $files;
     }
