@@ -1,6 +1,12 @@
 {
+    "repositories": [
+        {
+            "type": "vcs",
+            "url": "https://github.com/arvanus/FreeDSx-LDAP"
+        }
+    ],
     "require": {
-        "freedsx/ldap": "^0.8.0",
+        "freedsx/ldap": "^0.9.0",
         "ext-soap": "*",
         "ext-ldap": "*",
         "ext-pcntl": "*"

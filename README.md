@@ -60,6 +60,27 @@ Credentials themselves are never written, and stored values hold only an expiry
 and a boolean. A failure to set the cache up disables it silently, falling back
 to querying ISPConfig every time.
 
+## A note on the FreeDSx dependency
+
+This project pins `freedsx/ldap` to a fork, declared under `repositories` in
+`src/composer.json`. The fork is 0.9.0 plus a single upstream commit.
+
+The bug it carries the fix for: a forked child inherits the parent's signal
+handlers during the window between `pcntl_fork()` and
+`installChildSignalHandlers()`. A signal arriving in that window makes the new
+child run `handleServerShutdown()` - which in a child means sending SIGTERM to
+its own siblings and tearing down a server it does not own. This was observed
+in production, with a child logging "The server shutdown process has started"
+and signalling three sibling PIDs while the parent kept accepting connections.
+
+Upstream fixed it in `a2895b5e` on 30 Aug 2026, two days after 0.9.0 shipped,
+so no tagged release carries it. `main` cannot be used instead: it has diverged
+by 610 commits and rewrote the request handler API, removing the very classes
+this project extends.
+
+**Drop the fork as soon as an upstream release includes that commit** - restore
+`"freedsx/ldap": "^0.9.0"` (or newer) and delete the `repositories` block.
+
 ## Logging
 
 Lifecycle events - startup, restarts, crashes and why the process is exiting -
